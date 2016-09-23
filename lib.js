@@ -55,9 +55,9 @@
 	}
 	window["yc"]["getElementsByClassName"]=getElementsByClassName;
 
-//////////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////
 //========================================DOM节点操作的补充======================================
-///////////////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////////////////////
 
 	//插入一个节点到指定节点之后
 	function insertAfter(node,referenceNode){
@@ -163,12 +163,13 @@
 	window['yc']['toggleDisplay']=toggleDisplay;
 	
 	//替换模版
-	function supplant(str,date){
-		// for(var index in date){
-		// 	template=template.replace("{"+index+"}",date[index]);
+	//data为一个json对象
+	function supplant(str,data){
+		// for(var index in data){
+		// 	template=template.replace("{"+index+"}",data[index]);
 		// }
 		// return template;
-		return str.replace(/{([a-z]*)}/g,function(a,b){return date[b]})
+		return str.replace(/{([a-z]*)}/g,function(a,b){return data[b]})
 	}
 	window["yc"]["supplant"]=supplant;
 
@@ -539,9 +540,9 @@
 	function getRequestobject(url,options){
 		var req=false;
 		if(window.XMLHttpRequest){
-			var req=new window.XMLHttpRequest();
+			req=new window.XMLHttpRequest();
 		}else if(window.ActiveXObject){
-			var req=new window.ActiveXObject('Microsoft.XMLHTTP');
+			req=new window.ActiveXObject('Microsoft.XMLHTTP');
 		}
 		if(!req) return false;
 		options=options || {};
@@ -576,6 +577,7 @@
 										options.jsResponseListener.call(req,req.responseText);
 									}
 									break;
+								case "text/plain":
 								case "application/json":
 									if(options.jsonResponseListener){
 										try{
@@ -600,7 +602,7 @@
 									break;
 							}
 							if(options.completeListener){
-								options.completeListener.apply(req,arguments);
+								options.completeListener.call(req,req.responseText);
 							}
 						}else{//响应码不为200
 							if(options.errorListener){
@@ -648,6 +650,169 @@
 		return req.send(options.send);
 	}
 	window["yc"]["ajaxRequest"]=ajaxRequest;
+	
+	
+	
+	
+	
+/**
+ * 跨站对象计数器
+ */
+var XssHttpRequestCount=0;
+
+/**
+ *request对象的一个跨站点<script>标签生成器
+ */
+var XssHttpRequest = function(){
+    this.requestID = 'XSS_HTTP_REQUEST_' + (++XssHttpRequestCount);   //请求的编号，保证唯一. 
+}
+//扩展   httpRequest对象。添加了一些属性
+XssHttpRequest.prototype = {
+    url:null,
+    scriptObject:null,
+    responseJSON:null,    //  包含响应的结果，这个结果已经是json对象，所以不要 eval了. 
+    status:0,        //1表示成功，   2表示错误
+    readyState:0,      
+    timeout:30000,
+    onreadystatechange:function() { },
+    
+    setReadyState: function(newReadyState) {
+        // 如果比当前状态更新，，则更新就绪状态
+        if(this.readyState < newReadyState || newReadyState==0) {
+            this.readyState = newReadyState;
+            this.onreadystatechange();
+        }
+    },
+    
+    open: function(url,timeout){
+        this.timeout = timeout || 30000;
+        // 将一个名字为  XSS_HTTP_REQUEST_CALLBACK的键加到   请求的url地址后面， 值为要回调的函数的名字.这个函数名叫   XSS_HTTP_REQUEST_数字_CALLBACK
+        this.url = url + ((url.indexOf('?')!=-1) ? '&' : '?' ) + 'XSS_HTTP_REQUEST_CALLBACK=' + this.requestID + '_CALLBACK';    
+        this.setReadyState(0);        
+    },
+    
+    send: function(){
+        var requestObject = this;
+        //创建一个用于载入外部数据的  script 标签对象
+        this.scriptObject = document.createElement('script');
+        this.scriptObject.setAttribute('id',this.requestID);
+        this.scriptObject.setAttribute('type','text/javascript');
+        // 先不设置src属性，也先不将其添加到文档.
+
+        // 异常情况： 创建一个在给定的时间 timeout 毫秒后触发的  setTimeout(), 如果在给定的时间内脚本没有载入完成，则取消载入.
+        var timeoutWatcher = setTimeout(function() {
+            // 如果脚本晚于我们指定的时间载入， 则将window中的rquestObject对象中的方法设置为空方法
+            window[requestObject.requestID + '_CALLBACK'] = function() { };
+            // 移除脚本以防止这个脚本的进一步载入。 
+            requestObject.scriptObject.parentNode.removeChild(requestObject.scriptObject);
+            // 因为以上加载的脚本的操作已经超时，并且 脚本标签已经移除，所以将当前  request对象的状态设置为  2,表示错误, 并设置错误文本 
+            requestObject.status = 2;
+            requestObject.statusText = 'Timeout after ' + requestObject.timeout + ' milliseconds.'            
+            
+            // 重新更新  request请求的就绪状态，但请注意，这时，  status 是2 ,而不是200,表示失败了.
+            requestObject.setReadyState(2);
+            requestObject.setReadyState(3);
+            requestObject.setReadyState(4);
+                    
+        },this.timeout);
+        
+        
+        // 在window对象中创建一个与请求中的回调方法名相同的方法，在回调时负责处理请求的其它部分. 
+        window[this.requestID + '_CALLBACK'] = function(JSON) {
+            // 当脚本载入时将执行这个方法同时传入预期的JSON对象. 
+        
+            // 当请求载入成功后，清除timeoutWatcher定时器. 
+            clearTimeout(timeoutWatcher);
+
+            //更新状态
+            requestObject.setReadyState(2);
+            requestObject.setReadyState(3);
+            
+            // 将状态设置为成功. 
+            requestObject.responseJSON = JSON; 
+            requestObject.status=1;
+            requestObject.statusText = 'Loaded.' 
+        
+            // 最后更新状态为  4. 
+            requestObject.setReadyState(4);
+        }
+
+        // 设置初始就绪状态
+        this.setReadyState(1);
+        
+        // 现在再设置src属性并将其添加到文档头部，这样就会访问服务器下载脚本. 
+        this.scriptObject.setAttribute('src',this.url);                    
+        var head = document.getElementsByTagName('head')[0];
+        head.appendChild(this.scriptObject);
+        
+    }
+}
+window['yc']['XssHttpRequest'] = XssHttpRequest;
+
+/**
+ * 设置Xssrequest对象的各个参数.
+ */
+function getXssRequestObject(url,options) {
+    var req = new  XssHttpRequest();
+    options = options || {};
+    //默认超时时间
+    options.timeout = options.timeout || 30000;
+    req.onreadystatechange = function() {
+        switch (req.readyState) {
+            case 1:
+                if(options.loadListener) {
+                    options.loadListener.apply(req,arguments);
+                }
+                break;
+            case 2:
+                if(options.loadedListener) {
+                    options.loadedListener.apply(req,arguments);
+                }
+                break;
+            case 3:
+                if(options.ineractiveListener) {
+                    options.ineractiveListener.apply(req,arguments);
+                }
+                break;
+            case 4:
+                if (req.status == 1) {
+                    // The request was successful
+                    if(options.completeListener) {
+                        options.completeListener.apply(req,arguments);
+                    }
+                } else {
+                    if(options.errorListener) {
+                        options.errorListener.apply(req,arguments);
+                    }
+                }
+                break;
+        }
+    };
+    req.open(url,options.timeout);
+    return req;
+}
+window['yc']['getXssRequestObject'] = getXssRequestObject;
+
+/**
+ * 发送跨站请求:   JSONP的跨站请求只支持  get方式.
+ */
+ /*
+	options对象结构：{
+		timeout: 超时时间
+		'loadListener':readyState=1时的回调函数
+		'loadedLIstener':readyState=2时的回调函数
+		'ineractiveListener':readyState=3时的回调函数
+
+		以下是readyState=4 时的处理回调函数
+		'completeListener':处理完成后的回调
+		'errorListener':响应码不为200时的回调函数
+	}
+	*/
+function xssRequest(url,options) {
+    var req = getXssRequestObject(url,options);
+    return req.send(null);
+}
+window['yc']['xssRequest'] = xssRequest;
 
 
 ///////////////////////////////////////////////////////////////////////////////////////////
